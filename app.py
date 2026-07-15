@@ -174,13 +174,18 @@ def render_css():
         /* ---- Professional Dashboard: colored KPI boxes ---- */
         .kpi-box {{
             border-radius: 14px;
-            padding: 1.1rem 1rem;
+            padding: 1.1rem 0.8rem;
             text-align: center;
             background: {T['form_bg']};
             border: 2px solid;
+            height: 130px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
         }}
-        .kpi-box .kpi-value {{ font-family: 'Poppins', sans-serif; font-weight: 700; font-size: 2.1rem; }}
-        .kpi-box .kpi-label {{ color: {T['subtitle_color']}; font-size: 0.8rem; font-weight: 600; margin-top: 0.2rem; letter-spacing: 0.02em; }}
+        .kpi-box .kpi-value {{ font-family: 'Poppins', sans-serif; font-weight: 700; font-size: 2.1rem; line-height: 1.1; }}
+        .kpi-box .kpi-label {{ color: {T['subtitle_color']}; font-size: 0.78rem; font-weight: 600; margin-top: 0.35rem; letter-spacing: 0.02em; line-height: 1.25; }}
         .kpi-blue {{ border-color: #2E75B6; }} .kpi-blue .kpi-value {{ color: #2E75B6; }}
         .kpi-green {{ border-color: #22c55e; }} .kpi-green .kpi-value {{ color: #22c55e; }}
         .kpi-orange {{ border-color: #f59e0b; }} .kpi-orange .kpi-value {{ color: #f59e0b; }}
@@ -974,17 +979,12 @@ def screen_professional_dashboard():
     with k2:
         _kpi_box("kpi-green", f"{data['avg_utilization_pct']:.0f}%", "UTILIZATION vs AVAILABLE DV")
     with k3:
-        _kpi_box("kpi-orange", f"{data['avg_opening_pct']:.0f}%", "OPENING DV % (TARGET ≥ 50%)")
+        _kpi_box("kpi-orange", f"{data['avg_opening_pct']:.0f}%", "OPENING DV %")
     with k4:
         _kpi_box("kpi-purple", f"{data['avg_eff_util_pct']:.0f}%", "EFFECTIVE UTILIZATION %")
     with k5:
-        _kpi_box("kpi-red", f"~{data['avg_trips_per_dv_month']:.0f}", "TRIPS / DV / MONTH (TARGET 15)")
+        _kpi_box("kpi-red", f"~{data['avg_trips_per_dv_month']:.0f}", "TRIPS / DV / MONTH")
 
-    st.caption(
-        f"Effective Utilization % = Utilization % × Opening DV % "
-        f"({data['avg_utilization_pct']:.0f}% × {data['avg_opening_pct']:.0f}% = {data['avg_eff_util_pct']:.0f}%) "
-        f"— Trips/DV/Month = Effective Utilization % × 30."
-    )
     st.caption(f"Based on {data['days_count']} day(s) of submitted data in this period.")
     st.write("")
 
