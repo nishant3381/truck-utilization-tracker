@@ -180,7 +180,7 @@ def get_plant_id_by_site_code(site_code: str):
 
 
 def add_entry(plant_id, entry_date, shift, dv_type, total_dv, dv_available, dv_utilised,
-              dv_inroute, trips_completed, updated_by, updated_at):
+              dv_inroute, updated_by, updated_at, trips_completed=0):
     conn = get_conn()
     conn.execute(
         """INSERT INTO entries
@@ -194,16 +194,18 @@ def add_entry(plant_id, entry_date, shift, dv_type, total_dv, dv_available, dv_u
     conn.close()
 
 
-def update_entry(entry_id, total_dv, dv_available, dv_utilised, dv_inroute, trips_completed,
+def update_entry(entry_id, total_dv, dv_available, dv_utilised, dv_inroute,
                   updated_by, updated_at):
-    """Corrects an existing entry in place (used by the Edit flow)."""
+    """Corrects an existing entry in place (used by the Edit flow). trips_completed
+    is intentionally left untouched -- it's a legacy column, no longer collected
+    since Trips/DV/Month is now calculated from Effective Utilization instead."""
     conn = get_conn()
     conn.execute(
         """UPDATE entries
-           SET total_dv=?, dv_available=?, dv_utilised=?, dv_inroute=?, trips_completed=?,
+           SET total_dv=?, dv_available=?, dv_utilised=?, dv_inroute=?,
                updated_by=?, updated_at=?
            WHERE id=?""",
-        (total_dv, dv_available, dv_utilised, dv_inroute, trips_completed,
+        (total_dv, dv_available, dv_utilised, dv_inroute,
          updated_by, updated_at, entry_id),
     )
     conn.commit()

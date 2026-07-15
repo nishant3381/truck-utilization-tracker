@@ -6,6 +6,10 @@ Definitions (as specified):
     Opening DV %          = DV Available for the day / Total DV
     Utilization %          = DV Utilised / DV Available for the day
     Effective Utilization  = Utilization % * Opening DV %
+    Trips / DV / Month     = Effective Utilization % * 30
+        (a formula-based projection -- no trip-count data is collected;
+        this assumes one potential "trip" per DV per day at full effective
+        utilization, scaled to a 30-day month)
 
 All percentages are computed at the DAILY level first (summing both shifts'
 numbers for that plant/day, or across all plants/regions for pan-India figures),
@@ -29,24 +33,22 @@ def build_dashboard_data(entries):
         return None
 
     df = pd.DataFrame(entries)
-    if "trips_completed" not in df.columns:
-        df["trips_completed"] = 0
 
     # ---- Pan-India daily aggregates (combines all plants + both shifts per day) ----
     daily = df.groupby("entry_date").agg(
         total_dv=("total_dv", "sum"),
         dv_available=("dv_available", "sum"),
         dv_utilised=("dv_utilised", "sum"),
-        trips_completed=("trips_completed", "sum"),
     ).reset_index()
     daily["util_pct"] = daily.apply(lambda r: _safe_ratio(r["dv_utilised"], r["dv_available"]), axis=1)
     daily["opening_pct"] = daily.apply(lambda r: _safe_ratio(r["dv_available"], r["total_dv"]), axis=1)
-    daily["trips_per_dv"] = daily.apply(lambda r: _safe_ratio(r["trips_completed"], r["dv_available"]), axis=1)
+    daily["eff_util"] = daily["util_pct"] * daily["opening_pct"]
 
     avg_fleet_size = daily["total_dv"].mean()
     avg_utilization_pct = daily["util_pct"].mean() * 100
     avg_opening_pct = daily["opening_pct"].mean() * 100
-    avg_trips_per_dv_month = daily["trips_per_dv"].mean() * 30  # projected to a 30-day month
+    avg_eff_util_frac = daily["eff_util"].mean()
+    avg_trips_per_dv_month = avg_eff_util_frac * 30  # Effective Utilization % * 30
     days_count = len(daily)
 
     # ---- Per-plant daily aggregates (combines both shifts for that plant/day) ----

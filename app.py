@@ -271,8 +271,23 @@ def render_css():
         div[data-testid="stForm"] label, div[data-testid="stForm"] p,
         [class*="st-key-add_entry_box"] label, [class*="st-key-add_entry_box"] p,
         .stRadio label, .stTextInput label, .stNumberInput label,
-        .stSelectbox label, .stDateInput label {{
+        .stSelectbox label, .stDateInput label,
+        [data-testid="stWidgetLabel"], [data-testid="stWidgetLabel"] p,
+        [data-testid="stWidgetLabel"] label {{
             color: {T['text_color']} !important;
+            opacity: 1 !important;
+        }}
+
+        /* Radio option text -- Streamlit sometimes dims unselected options via
+           opacity, which combined with a light theme can make them unreadable */
+        [data-testid="stRadio"] label,
+        [data-testid="stRadio"] label p,
+        [data-testid="stRadio"] label div,
+        [data-testid="stRadio"] label span,
+        [role="radiogroup"] label,
+        [role="radiogroup"] label p {{
+            color: {T['text_color']} !important;
+            opacity: 1 !important;
         }}
 
         /* ---- Buttons (default, full-size, used inside cards / forms) ---- */
@@ -334,9 +349,27 @@ def render_css():
             color: {T['alert_text']} !important;
         }}
 
-        button[data-testid="stTab"] {{ color: {T['subtitle_color']} !important; }}
-        button[data-testid="stTab"][aria-selected="true"] {{ color: {T['accent_from']} !important; font-weight: 700; }}
-        button[data-testid="stTab"] p {{ color: inherit !important; }}
+        button[data-testid="stTab"],
+        [data-testid="stTabs"] button,
+        .stTabs button,
+        button[data-baseweb="tab"] {{
+            color: {T['subtitle_color']} !important;
+            opacity: 1 !important;
+        }}
+        button[data-testid="stTab"] p,
+        [data-testid="stTabs"] button p,
+        .stTabs button p,
+        button[data-baseweb="tab"] p {{
+            color: inherit !important;
+            opacity: 1 !important;
+        }}
+        button[data-testid="stTab"][aria-selected="true"],
+        [data-testid="stTabs"] button[aria-selected="true"],
+        .stTabs button[aria-selected="true"],
+        button[data-baseweb="tab"][aria-selected="true"] {{
+            color: {T['accent_from']} !important;
+            font-weight: 700;
+        }}
 
         details {{
             background: {T['form_bg']};
@@ -595,7 +628,7 @@ def _render_add_entry_form():
         st.caption("Submitting again for the same plant with a different DV Type adds a separate, segregated entry.")
 
         st.markdown("**Data (all numbers):**")
-        c1, c2, c3, c4, c5 = st.columns(5)
+        c1, c2, c3, c4 = st.columns(4)
         with c1:
             total_dv = st.number_input("Total DV", min_value=0, step=1, key="add_entry_total")
         with c2:
@@ -604,8 +637,6 @@ def _render_add_entry_form():
             dv_utilised = st.number_input("DV Utilised (Orders Recd)", min_value=0, step=1, key="add_entry_util")
         with c4:
             dv_inroute = st.number_input("DV Inroute to Plant", min_value=0, step=1, key="add_entry_inroute")
-        with c5:
-            trips_completed = st.number_input("Trips Completed", min_value=0, step=1, key="add_entry_trips")
 
         submitted = st.button("Submit Update", use_container_width=True, key="add_entry_submit_btn")
 
@@ -626,7 +657,6 @@ def _render_add_entry_form():
                 dv_available=int(dv_available),
                 dv_utilised=int(dv_utilised),
                 dv_inroute=int(dv_inroute),
-                trips_completed=int(trips_completed),
                 updated_by=updater_name.strip(),
                 updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
             )
@@ -677,7 +707,7 @@ def _render_edit_delete():
             edit_key = f"edit_form_{entry['id']}"
             with st.form(edit_key):
                 st.caption(f"Site Code: {entry['site_code']} | Submitted: {entry['updated_at']}")
-                ec1, ec2, ec3, ec4, ec5 = st.columns(5)
+                ec1, ec2, ec3, ec4 = st.columns(4)
                 with ec1:
                     e_total = st.number_input("Total DV", min_value=0, step=1,
                                                value=entry["total_dv"], key=f"tot_{entry['id']}")
@@ -690,9 +720,6 @@ def _render_edit_delete():
                 with ec4:
                     e_inroute = st.number_input("DV Inroute", min_value=0, step=1,
                                                  value=entry["dv_inroute"], key=f"inroute_{entry['id']}")
-                with ec5:
-                    e_trips = st.number_input("Trips Completed", min_value=0, step=1,
-                                               value=entry.get("trips_completed", 0), key=f"trips_{entry['id']}")
                 e_updater = st.text_input("Corrected by (your name)", value=entry["updated_by"],
                                            key=f"updater_{entry['id']}")
                 save_clicked = st.form_submit_button("💾 Save Changes", use_container_width=True)
@@ -703,7 +730,7 @@ def _render_edit_delete():
                 else:
                     db.update_entry(
                         entry_id=entry["id"], total_dv=int(e_total), dv_available=int(e_avail),
-                        dv_utilised=int(e_util), dv_inroute=int(e_inroute), trips_completed=int(e_trips),
+                        dv_utilised=int(e_util), dv_inroute=int(e_inroute),
                         updated_by=e_updater.strip() or entry["updated_by"],
                         updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
                     )
