@@ -128,6 +128,13 @@ def init_db():
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS schema_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+
     # Seed default credential for the data-update login (CHANGE THIS before real use)
     cur.execute("SELECT COUNT(*) AS c FROM users")
     if cur.fetchone()["c"] == 0:
@@ -142,8 +149,58 @@ def init_db():
         PLANTS_MASTER_SEED,
     )
 
+    _migrate_consolidate_bd_crd(cur)
+
     conn.commit()
     conn.close()
+
+
+def _migrate_consolidate_bd_crd(cur):
+    """One-time, idempotent migration: merges the old individual 'BD BEVERAGES' /
+    'BD FOODS' / 'BD VENTURES NEW' plants into the single combined 'BD' plant
+    (site_code S4PC/S4QS), and the old 'CRD BF' / 'CRD GF' into the single 'CRD'
+    (site_code S4SN/S4PN). Any historical entries logged against the old plants
+    are reassigned to the new combined plant first, so no data is lost -- this
+    runs safely on every startup and does nothing once already applied, which
+    matters because a live deployed app has no way to manually delete/reset its
+    database file the way a local copy can."""
+    done = cur.execute(
+        "SELECT value FROM schema_meta WHERE key='migrated_bd_crd_v1'"
+    ).fetchone()
+    if done:
+        return
+
+    def _consolidate(old_codes, new_code):
+        new_row = cur.execute(
+            "SELECT id FROM plants_master WHERE site_code=?", (new_code,)
+        ).fetchone()
+        if not new_row:
+            return
+        new_id = new_row["id"]
+
+        old_rows = cur.execute(
+            f"SELECT id FROM plants_master WHERE site_code IN ({','.join('?' * len(old_codes))})",
+            old_codes,
+        ).fetchall()
+        old_ids = [r["id"] for r in old_rows if r["id"] != new_id]
+        if not old_ids:
+            return
+
+        cur.execute(
+            f"UPDATE entries SET plant_id=? WHERE plant_id IN ({','.join('?' * len(old_ids))})",
+            [new_id] + old_ids,
+        )
+        cur.execute(
+            f"DELETE FROM plants_master WHERE id IN ({','.join('?' * len(old_ids))})",
+            old_ids,
+        )
+
+    _consolidate(["S4QS", "S4PD", "S4PC"], "S4PC/S4QS")   # -> BD
+    _consolidate(["S4PN", "S4SN"], "S4SN/S4PN")             # -> CRD
+
+    cur.execute(
+        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('migrated_bd_crd_v1', '1')"
+    )
 
 
 def check_login(username: str, password: str):
