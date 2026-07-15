@@ -24,15 +24,12 @@ PLANTS_MASTER_SEED = [
     ("South", "S4PH", "ABHIRAMI"),
     ("South", "S4UZ", "PARAG"),
     ("East", "S4UP", "KL BEVERAGES"),
-    ("North", "S4QS", "BD BEVERAGES"),
-    ("North", "S4PD", "BD FOODS"),
-    ("North", "S4PC", "BD VENTURES NEW"),
+    ("North", "S4PC/S4QS", "BD"),
     ("South", "S5AH", "BELLBERRIES"),
     ("North", "S4QD", "BHARATIYAM"),
     ("South", "S4RD", "CFA-CHAMRAJNAGAR"),
     ("South", "S4QN", "CHENNAI CFA"),
-    ("North", "S4PN", "CRD BF"),
-    ("North", "S4SN", "CRD GF"),
+    ("North", "S4SN/S4PN", "CRD"),
     ("East", "S4PV", "EPIC AGRO"),
     ("South", "S4PF", "FAVORICH"),
     ("East", "S4SM", "GEO NUTRI"),
@@ -177,6 +174,21 @@ def get_plant_id_by_site_code(site_code: str):
     ).fetchone()
     conn.close()
     return row["id"] if row else None
+
+
+def entry_exists(plant_id, entry_date, shift, dv_type) -> bool:
+    """Checks whether this plant already has an entry for this exact date+shift+DV
+    Type combination. Used to block accidental duplicate submissions in Add Entry --
+    the user should use Edit/Delete Entries to correct an existing one instead."""
+    conn = get_conn()
+    row = conn.execute(
+        """SELECT 1 FROM entries
+           WHERE plant_id=? AND entry_date=? AND shift=? AND dv_type=?
+           LIMIT 1""",
+        (plant_id, entry_date, shift, dv_type),
+    ).fetchone()
+    conn.close()
+    return row is not None
 
 
 def add_entry(plant_id, entry_date, shift, dv_type, total_dv, dv_available, dv_utilised,

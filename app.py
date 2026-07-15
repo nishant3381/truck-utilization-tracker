@@ -36,6 +36,10 @@ if "theme" not in st.session_state:
     st.session_state.theme = "light"
 if "last_submit_success" not in st.session_state:
     st.session_state.last_submit_success = None
+if "multi_entry_row_ids" not in st.session_state:
+    st.session_state.multi_entry_row_ids = [0]
+if "multi_entry_next_id" not in st.session_state:
+    st.session_state.multi_entry_next_id = 1
 
 
 def go(screen):
@@ -338,6 +342,26 @@ def render_css():
             margin-bottom: 1rem;
         }}
 
+        .duplicate-badge {{
+            display: block;
+            background: #dc2626;
+            color: #ffffff !important;
+            border-radius: 8px;
+            padding: 0.5rem 0.9rem;
+            font-size: 0.88rem;
+            font-weight: 700;
+            margin: 0.4rem 0 1rem 0;
+            letter-spacing: 0.01em;
+        }}
+
+        [class*="st-key-me_row_box_"] {{
+            background: {T['card_glass']};
+            border: 1px solid {T['form_border']};
+            border-radius: 12px;
+            padding: 1rem 1rem 0.3rem 1rem;
+            margin-bottom: 0.8rem;
+        }}
+
         div[data-testid="stMetric"] {{
             background: {T['form_bg']};
             border: 1px solid {T['form_border']};
@@ -587,10 +611,13 @@ def screen_update_home():
     )
     st.write("")
 
-    tab_add, tab_edit = st.tabs(["➕ Add Entry", "✏️ Edit / Delete Entries"])
+    tab_add, tab_multi, tab_edit = st.tabs(["➕ Add Entry", "📑 Multiple Entry", "✏️ Edit / Delete Entries"])
 
     with tab_add:
         _render_add_entry_form()
+
+    with tab_multi:
+        _render_multiple_entry()
 
     with tab_edit:
         _render_edit_delete()
@@ -648,12 +675,18 @@ def _render_add_entry_form():
 
     if submitted:
         plant_name = plant_by_code[selected_site_code]
+        plant_id = db.get_plant_id_by_site_code(selected_site_code)
         if not updater_name.strip():
             st.error("Please enter the updater name.")
         elif dv_utilised > dv_available:
             st.error("DV Utilised cannot exceed DV Available for today. Please check the numbers.")
+        elif db.entry_exists(plant_id, entry_date.isoformat(), shift, dv_type):
+            st.error(
+                f"An entry already exists for **{plant_name}** on **{entry_date.isoformat()}** "
+                f"— **{shift}** — DV Type **{dv_type}**. To correct it, go to the "
+                f"**Edit / Delete Entries** tab instead of submitting it again."
+            )
         else:
-            plant_id = db.get_plant_id_by_site_code(selected_site_code)
             db.add_entry(
                 plant_id=plant_id,
                 entry_date=entry_date.isoformat(),
@@ -683,6 +716,136 @@ def _render_add_entry_form():
             st.session_state.last_submit_success = None
             go("dashboard")
             st.rerun()
+
+
+def _render_multiple_entry():
+    st.caption("Update several plants at once for the same region, date, and shift.")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        m_date = st.date_input("Date", value=date.today(), key="me_date")
+    with col2:
+        m_shift = st.radio("Shift", db.SHIFTS, horizontal=True, key="me_shift")
+
+    m_updater = st.text_input("Updater name", key="me_updater")
+    m_region = st.radio("Factory Region", db.REGIONS, horizontal=True, key="me_region")
+
+    region_plants = db.get_plants_by_region(m_region)
+    if not region_plants:
+        st.warning(f"No plants configured for the {m_region} region.")
+        return
+
+    site_code_options = [p["site_code"] for p in region_plants]
+    plant_by_code = {p["site_code"]: p["plant_name"] for p in region_plants}
+
+    st.markdown("**Plant Entries:**")
+
+    # ---- Phase 1: render every row's input widgets, collect raw selections ----
+    raw_rows = []
+    for row_id in list(st.session_state.multi_entry_row_ids):
+        with st.container(key=f"me_row_box_{row_id}"):
+            c1, c2, c3, c4, c5, c6, c7 = st.columns([2.2, 1.3, 1, 1, 1, 1, 0.5])
+            with c1:
+                sel_code = st.selectbox(
+                    "Plant", site_code_options,
+                    format_func=lambda sc: f"{plant_by_code[sc]} ({sc})",
+                    key=f"me_plant_{row_id}_{m_region}",
+                )
+            with c2:
+                sel_dvtype = st.selectbox("DV Type", db.DV_TYPES, key=f"me_dvtype_{row_id}")
+            with c3:
+                t_total = st.number_input("Total DV", min_value=0, step=1, key=f"me_total_{row_id}")
+            with c4:
+                t_avail = st.number_input("DV Avail", min_value=0, step=1, key=f"me_avail_{row_id}")
+            with c5:
+                t_util = st.number_input("DV Util", min_value=0, step=1, key=f"me_util_{row_id}")
+            with c6:
+                t_inroute = st.number_input("DV Inroute", min_value=0, step=1, key=f"me_inroute_{row_id}")
+            with c7:
+                st.write("")
+                if len(st.session_state.multi_entry_row_ids) > 1:
+                    if st.button("🗑️", key=f"me_remove_{row_id}"):
+                        st.session_state.multi_entry_row_ids.remove(row_id)
+                        st.rerun()
+
+            duplicate_placeholder = st.empty()
+
+            plant_id = db.get_plant_id_by_site_code(sel_code)
+            raw_rows.append({
+                "row_id": row_id, "plant_id": plant_id, "plant_name": plant_by_code[sel_code],
+                "dv_type": sel_dvtype, "total_dv": t_total, "dv_available": t_avail,
+                "dv_utilised": t_util, "dv_inroute": t_inroute, "placeholder": duplicate_placeholder,
+            })
+
+    # ---- Phase 2: detect duplicates -- both already-in-database AND repeated within this batch ----
+    from collections import Counter
+    batch_counts = Counter((r["plant_id"], r["dv_type"]) for r in raw_rows)
+
+    row_data = []
+    for r in raw_rows:
+        key = (r["plant_id"], r["dv_type"])
+        is_db_dup = db.entry_exists(r["plant_id"], m_date.isoformat(), m_shift, r["dv_type"])
+        is_batch_dup = batch_counts[key] > 1
+        is_dup = is_db_dup or is_batch_dup
+
+        if is_dup:
+            reason = "already submitted" if is_db_dup else "repeated in this batch"
+            r["placeholder"].markdown(
+                f'<span class="duplicate-badge">🔴 DUPLICATE ENTRY — {r["plant_name"]} / {r["dv_type"]} '
+                f'({reason} for {m_shift} on {m_date.isoformat()})</span>',
+                unsafe_allow_html=True,
+            )
+
+        row_data.append({**r, "is_dup": is_dup})
+
+    add_col, submit_col = st.columns([1, 2])
+    with add_col:
+        if st.button("➕ Add Another Plant", use_container_width=True, key="me_add_row"):
+            new_id = st.session_state.multi_entry_next_id
+            st.session_state.multi_entry_next_id += 1
+            st.session_state.multi_entry_row_ids.append(new_id)
+            st.rerun()
+    with submit_col:
+        submit_all = st.button("Submit All Entries", use_container_width=True, key="me_submit_all")
+
+    if submit_all:
+        if not m_updater.strip():
+            st.error("Please enter the updater name.")
+        else:
+            inserted, skipped_dup, skipped_invalid = 0, 0, 0
+            seen_in_batch = set()
+            for row in row_data:
+                key = (row["plant_id"], row["dv_type"])
+                if row["dv_utilised"] > row["dv_available"]:
+                    skipped_invalid += 1
+                    continue
+                if row["is_dup"] or key in seen_in_batch:
+                    skipped_dup += 1
+                    continue
+                db.add_entry(
+                    plant_id=row["plant_id"], entry_date=m_date.isoformat(), shift=m_shift,
+                    dv_type=row["dv_type"], total_dv=int(row["total_dv"]),
+                    dv_available=int(row["dv_available"]), dv_utilised=int(row["dv_utilised"]),
+                    dv_inroute=int(row["dv_inroute"]), updated_by=m_updater.strip(),
+                    updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                )
+                seen_in_batch.add(key)
+                inserted += 1
+
+            if inserted:
+                st.success(
+                    f"Saved {inserted} entr{'y' if inserted == 1 else 'ies'} for "
+                    f"{m_region} — {m_shift} — {m_date.isoformat()}."
+                )
+            if skipped_dup:
+                st.error(
+                    f"Skipped {skipped_dup} duplicate entr{'y' if skipped_dup == 1 else 'ies'} "
+                    f"(highlighted above in red)."
+                )
+            if skipped_invalid:
+                st.error(
+                    f"Skipped {skipped_invalid} row(s) where DV Utilised exceeded DV Available."
+                )
 
 
 def _render_edit_delete():
