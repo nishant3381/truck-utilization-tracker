@@ -184,6 +184,7 @@ def render_css():
         .kpi-blue {{ border-color: #2E75B6; }} .kpi-blue .kpi-value {{ color: #2E75B6; }}
         .kpi-green {{ border-color: #22c55e; }} .kpi-green .kpi-value {{ color: #22c55e; }}
         .kpi-orange {{ border-color: #f59e0b; }} .kpi-orange .kpi-value {{ color: #f59e0b; }}
+        .kpi-purple {{ border-color: #8b5cf6; }} .kpi-purple .kpi-value {{ color: #8b5cf6; }}
         .kpi-red {{ border-color: #ef4444; }} .kpi-red .kpi-value {{ color: #ef4444; }}
 
         /* ---- Colored section header bars (Top Performers / Needs Focus) ---- */
@@ -967,7 +968,7 @@ def screen_professional_dashboard():
         render_footer()
         return
 
-    k1, k2, k3, k4 = st.columns(4)
+    k1, k2, k3, k4, k5 = st.columns(5)
     with k1:
         _kpi_box("kpi-blue", f"{data['avg_fleet_size']:.0f}", "AVG FLEET SIZE (# DV / DAY)")
     with k2:
@@ -975,8 +976,15 @@ def screen_professional_dashboard():
     with k3:
         _kpi_box("kpi-orange", f"{data['avg_opening_pct']:.0f}%", "OPENING DV % (TARGET ≥ 50%)")
     with k4:
+        _kpi_box("kpi-purple", f"{data['avg_eff_util_pct']:.0f}%", "EFFECTIVE UTILIZATION %")
+    with k5:
         _kpi_box("kpi-red", f"~{data['avg_trips_per_dv_month']:.0f}", "TRIPS / DV / MONTH (TARGET 15)")
 
+    st.caption(
+        f"Effective Utilization % = Utilization % × Opening DV % "
+        f"({data['avg_utilization_pct']:.0f}% × {data['avg_opening_pct']:.0f}% = {data['avg_eff_util_pct']:.0f}%) "
+        f"— Trips/DV/Month = Effective Utilization % × 30."
+    )
     st.caption(f"Based on {data['days_count']} day(s) of submitted data in this period.")
     st.write("")
 

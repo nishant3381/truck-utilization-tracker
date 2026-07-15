@@ -48,6 +48,7 @@ def build_dashboard_data(entries):
     avg_utilization_pct = daily["util_pct"].mean() * 100
     avg_opening_pct = daily["opening_pct"].mean() * 100
     avg_eff_util_frac = daily["eff_util"].mean()
+    avg_eff_util_pct = avg_eff_util_frac * 100
     avg_trips_per_dv_month = avg_eff_util_frac * 30  # Effective Utilization % * 30
     days_count = len(daily)
 
@@ -90,6 +91,7 @@ def build_dashboard_data(entries):
         avg_fleet_size=avg_fleet_size,
         avg_utilization_pct=avg_utilization_pct,
         avg_opening_pct=avg_opening_pct,
+        avg_eff_util_pct=avg_eff_util_pct,
         avg_trips_per_dv_month=avg_trips_per_dv_month,
         days_count=days_count,
         daily=daily,
