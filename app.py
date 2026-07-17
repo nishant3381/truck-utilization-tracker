@@ -23,7 +23,21 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
-db.init_db()
+
+
+@st.cache_resource(show_spinner=False)
+def _ensure_db_ready():
+    """Runs db.init_db() (create tables, seed data, run migrations) exactly
+    once per running app process. Without this guard, it would re-run on
+    every single click -- Streamlit re-executes the whole script on every
+    interaction -- repeating several network round-trips to the database
+    each time, which is what was still causing slow clicks even after the
+    connection-reuse fix."""
+    db.init_db()
+    return True
+
+
+_ensure_db_ready()
 
 # ---------------------------------------------------------------------------
 # Session state defaults

@@ -4,3 +4,4 @@ __pycache__/
 data/tracker.db
 .DS_Store
 .vscode/
+.streamlit/secrets.toml

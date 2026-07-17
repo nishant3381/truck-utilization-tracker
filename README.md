@@ -17,6 +17,14 @@ with a dark/light toggle and works cleanly on phone, laptop, or a big screen.
 | `requirements.txt` | Python packages needed |
 | `data/tracker.db` | The SQLite database file — created automatically the first time you run the app |
 
+**IMPORTANT — database backend change:** This version replaces the local SQLite
+file with a hosted Postgres database (via Supabase's free tier). This is a
+required setup step, not optional — **see section 6.5 below before running this
+version.** The switch happened because the local SQLite file was living on the
+app server's disk, which the hosting platform wiped during a routine
+restart/redeploy, silently deleting all previously entered data. A hosted
+database is independent of the app server, so this cannot happen again.
+
 **Note:** The plant list is fixed and pre-loaded from the official 60-plant master list
 (region, site code, plant name) — users select Region, then Plant (searchable dropdown),
 and Site Code auto-fills. Three plant names legitimately repeat under different site
@@ -25,16 +33,15 @@ shows `Plant Name (SITE_CODE)` in the dropdown to keep them unambiguous.
 
 **Schema change notice:** This version changed `plants_master` to be keyed by `site_code`
 instead of `plant_name` (to support the duplicate names above), and re-seeds the official
-plant list on startup. If you have a `data/tracker.db` from an earlier version of this
-app, delete it before running — the app will recreate it fresh with the new structure.
+plant list on startup.
 
 **Schema change notice:** This version added a `dv_type` column to `entries` (DV Type:
 10PP/12PP/18PP/9MT/18MT/12MT — a plant can have separate entries per DV Type, shown as
 segregated rows in reports), and a `trips_completed` field (used only for the Trend
 Dashboard's "Trips / DV / Month" KPI). It also removed 2 duplicate rows from the plant
 master list (GEO NUTRI and OZPURE are no longer duplicated; SILVASSA still legitimately
-has two sites). If you have a `data/tracker.db` from an earlier version of this app,
-delete it before running — the app will recreate it fresh with the new structure.
+has two sites). A self-healing migration in `db.py` applies this automatically on
+startup, safely reassigning any historical entries rather than losing them.
 
 ## 1. Prerequisites
 
@@ -159,6 +166,50 @@ cur.execute(
 
 Change the username/password, then delete `data/tracker.db` and restart the app.
 
+## 6.5. Connecting to Postgres (Supabase) — required, do this before running
+
+**This app no longer uses a local SQLite file.** It previously did, and that file
+got wiped when the hosting platform reset its filesystem (this happened once —
+see the note at the top of this README). The app now uses a free hosted Postgres
+database via Supabase, which is independent of whichever host runs the app code,
+so it survives restarts, redeploys, and even switching hosts entirely.
+
+**Step 1 — Create a free Supabase project**
+1. Go to [supabase.com](https://supabase.com) → sign up (free, no credit card needed)
+2. "New project" → give it a name → set a database password (**save this password
+   somewhere** — you'll need it in Step 2) → choose the region closest to you → Create
+
+**Step 2 — Get your connection string**
+1. In your new project, go to **Settings → Database**
+2. Under "Connection string," choose the **URI** tab
+3. Copy the string — it looks like:
+   `postgresql://postgres:[YOUR-PASSWORD]@db.xxxxxxxxxxxx.supabase.co:5432/postgres`
+4. Replace `[YOUR-PASSWORD]` with the real password you set in Step 1
+
+**Step 3 — Add it locally (for testing on your own machine)**
+1. Copy `.streamlit/secrets.toml.example` to a new file: `.streamlit/secrets.toml`
+   (same folder, drop the `.example`)
+2. Paste your real connection string in as `DATABASE_URL`
+3. This file is excluded by `.gitignore` — it will never get pushed to GitHub
+
+**Step 4 — Test locally before deploying**
+```bash
+streamlit run app.py
+```
+Log in, add a test entry, check the dashboard. If this works locally, it'll work
+live too — this is the most important step, since it catches any issue before
+your team ever sees it.
+
+**Step 5 — Add the same secret to your live deployment**
+- **Streamlit Community Cloud:** your app → hamburger menu (⋮) or "Manage app" →
+  **Settings → Secrets** → paste the same `DATABASE_URL = "..."` line → Save
+  (this triggers an automatic redeploy)
+- **Render:** your service → **Environment** tab → add an environment variable
+  named `DATABASE_URL` with the same connection string as the value
+
+**Note:** `.streamlit/secrets.toml` (your real one) is never pushed to GitHub —
+only `.streamlit/secrets.toml.example` (the template, with no real password) is.
+
 ## 7. Pushing to GitHub
 
 ```bash
@@ -170,25 +221,26 @@ git branch -M main
 git push -u origin main
 ```
 
-`data/tracker.db` is excluded via `.gitignore` so your live data never gets pushed.
-
 ## 8. Deploying for free
 
 1. Push this repo to GitHub
 2. Go to [share.streamlit.io](https://share.streamlit.io), sign in with GitHub
 3. "New app" → pick this repo and `app.py` as the entry point → Deploy
+4. Add your `DATABASE_URL` secret (see section 6.5, Step 5) before or right after
+   the first deploy
 
-**Limitation to know:** Streamlit Community Cloud's filesystem can reset on
-redeploy/sleep, wiping the SQLite file. For always-on production use with real
-concurrent users, the next step is swapping `db.py`'s sqlite3 calls for a hosted
-Postgres database (e.g. Supabase's free tier) — the function signatures are written
-so this swap only touches one file. Ask me when you're ready for that step.
+**Your data is now safe from host resets.** Since it lives in Supabase rather
+than on the app server's disk, redeploys, restarts, reboots, or even switching
+to a different host entirely (Render, etc.) will not affect your stored entries.
 
 ## 9. Roadmap / possible next steps
 
-- Move from SQLite to Supabase/Postgres for production multi-user use
 - Add validation rules specific to your ops (e.g. DV Inroute + DV Utilised shouldn't
   exceed Total DV, if that's a real constraint)
 - Persist the dark/light theme choice across restarts (currently resets to light)
 - Per-user logins if you want stronger accountability beyond the free-text
   "updater name" / "corrected by" fields
+- Move hosting to Render or Hugging Face Spaces if you want to remove the
+  "Hosted with Streamlit" badge (now safe to do any time, since your data
+  no longer lives on the app server)
+

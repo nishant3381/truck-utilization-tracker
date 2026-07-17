@@ -1,17 +1,26 @@
 """
 db.py
 All database access for the Truck Utilization Tracker.
-Uses SQLite (file-based, zero setup) so you can run this entirely locally in VS Code.
-When you're ready to deploy for multiple simultaneous users, swap the sqlite3 calls
-here for a Postgres/Supabase connection -- the function signatures below can stay the same.
+
+Uses Postgres (a free hosted Supabase project) instead of a local SQLite file.
+This matters: a local file lives on the app server's disk, which free hosting
+tiers (Streamlit Community Cloud, Render, etc.) can wipe on restart, redeploy,
+or after a period of inactivity -- that's what caused the data loss. A hosted
+Postgres database is independent of the app server, so it survives all of that.
+
+Every function below has the exact same name and signature as before, so
+app.py, analytics.py, and excel_export.py did not need any changes for this swap.
+
+SETUP REQUIRED: this file needs a DATABASE_URL to connect. See README.md
+section "Connecting to Postgres (Supabase)" for how to create the free
+database and where to put the connection string.
 """
 
-import sqlite3
+import os
 import hashlib
-from pathlib import Path
-
-DB_PATH = Path(__file__).parent / "data" / "tracker.db"
-DB_PATH.parent.mkdir(exist_ok=True)
+import psycopg2
+import psycopg2.extras
+import streamlit as st
 
 REGIONS = ["North", "South", "East", "West"]
 SHIFTS = ["1st Half (Morning)", "2nd Half (Evening)"]
@@ -83,37 +92,113 @@ def _hash(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 
-def get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON;")
+def _get_database_url() -> str:
+    """Reads the Postgres connection string from Streamlit secrets (works on
+    Streamlit Cloud and locally via .streamlit/secrets.toml), falling back to
+    a plain environment variable DATABASE_URL (works on Render or anywhere
+    else that lets you set env vars)."""
+    url = st.secrets.get("DATABASE_URL") or os.environ.get("DATABASE_URL")
+    if not url:
+        raise RuntimeError(
+            "DATABASE_URL is not set. Locally: add it to .streamlit/secrets.toml. "
+            "On Streamlit Cloud: add it under your app's Settings -> Secrets. "
+            "On Render or elsewhere: set it as an environment variable. "
+            "See README.md for the exact connection string to use."
+        )
+    return url
+
+
+@st.cache_resource(show_spinner=False)
+def _get_shared_conn():
+    """One Postgres connection, reused for the lifetime of the app process
+    instead of reconnecting over the network on every single query. This is
+    the standard Streamlit pattern for external databases (see Streamlit
+    docs: 'Connect to a database'). Opening a fresh connection per query was
+    the actual cause of the multi-second delays -- each new connection has
+    to do a full network round-trip + SSL handshake to Supabase, which is
+    fine once, but very slow if repeated for every query on every click."""
+    conn = psycopg2.connect(_get_database_url(), cursor_factory=psycopg2.extras.RealDictCursor)
+    conn.autocommit = False
     return conn
 
 
-def init_db():
-    conn = get_conn()
-    cur = conn.cursor()
+def get_conn():
+    """Kept for compatibility -- returns the shared cached connection."""
+    return _get_shared_conn()
 
-    cur.execute("""
+
+def _run(fn):
+    """Runs fn(conn) against the shared connection. If the connection has
+    gone stale (e.g. Supabase's pooler dropped an idle connection), clears
+    the cache and retries once with a fresh connection. Any other error
+    rolls back so the shared connection isn't left in a broken transaction
+    state for the next query."""
+    conn = _get_shared_conn()
+    try:
+        return fn(conn)
+    except (psycopg2.OperationalError, psycopg2.InterfaceError):
+        _get_shared_conn.clear()
+        conn = _get_shared_conn()
+        return fn(conn)
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def _fetchall(query, params=()):
+    def run(conn):
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+        return [dict(r) for r in rows]
+    return _run(run)
+
+
+def _fetchone(query, params=()):
+    def run(conn):
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            row = cur.fetchone()
+        return dict(row) if row else None
+    return _run(run)
+
+
+def _execute(query, params=()):
+    def run(conn):
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+        conn.commit()
+    return _run(run)
+
+
+def _executemany(query, param_list):
+    def run(conn):
+        with conn.cursor() as cur:
+            cur.executemany(query, param_list)
+        conn.commit()
+    return _run(run)
+
+
+def init_db():
+    _execute("""
         CREATE TABLE IF NOT EXISTS users (
             username TEXT PRIMARY KEY,
             password_hash TEXT NOT NULL
         )
     """)
 
-    cur.execute("""
+    _execute("""
         CREATE TABLE IF NOT EXISTS plants_master (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             region TEXT NOT NULL,
-            site_code TEXT NOT NULL,
-            plant_name TEXT NOT NULL,
-            UNIQUE(site_code)
+            site_code TEXT NOT NULL UNIQUE,
+            plant_name TEXT NOT NULL
         )
     """)
 
-    cur.execute("""
+    _execute("""
         CREATE TABLE IF NOT EXISTS entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             plant_id INTEGER NOT NULL REFERENCES plants_master(id),
             entry_date TEXT NOT NULL,
             shift TEXT NOT NULL,
@@ -128,7 +213,7 @@ def init_db():
         )
     """)
 
-    cur.execute("""
+    _execute("""
         CREATE TABLE IF NOT EXISTS schema_meta (
             key TEXT PRIMARY KEY,
             value TEXT
@@ -136,79 +221,67 @@ def init_db():
     """)
 
     # Seed default credential for the data-update login (CHANGE THIS before real use)
-    cur.execute("SELECT COUNT(*) AS c FROM users")
-    if cur.fetchone()["c"] == 0:
-        cur.execute(
-            "INSERT INTO users (username, password_hash) VALUES (?,?)",
+    existing = _fetchone("SELECT COUNT(*) AS c FROM users")
+    if existing["c"] == 0:
+        _execute(
+            "INSERT INTO users (username, password_hash) VALUES (%s,%s)",
             ("rcplcampa", _hash("campa@123")),
         )
 
     # Seed the official plant master list (safe to re-run: keyed by site_code)
-    cur.executemany(
-        "INSERT OR IGNORE INTO plants_master (region, site_code, plant_name) VALUES (?,?,?)",
+    _executemany(
+        "INSERT INTO plants_master (region, site_code, plant_name) VALUES (%s,%s,%s) "
+        "ON CONFLICT (site_code) DO NOTHING",
         PLANTS_MASTER_SEED,
     )
 
-    _migrate_consolidate_bd_crd(cur)
-
-    conn.commit()
-    conn.close()
+    _migrate_consolidate_bd_crd()
 
 
-def _migrate_consolidate_bd_crd(cur):
+def _migrate_consolidate_bd_crd():
     """One-time, idempotent migration: merges the old individual 'BD BEVERAGES' /
     'BD FOODS' / 'BD VENTURES NEW' plants into the single combined 'BD' plant
     (site_code S4PC/S4QS), and the old 'CRD BF' / 'CRD GF' into the single 'CRD'
     (site_code S4SN/S4PN). Any historical entries logged against the old plants
-    are reassigned to the new combined plant first, so no data is lost -- this
-    runs safely on every startup and does nothing once already applied, which
-    matters because a live deployed app has no way to manually delete/reset its
-    database file the way a local copy can."""
-    done = cur.execute(
-        "SELECT value FROM schema_meta WHERE key='migrated_bd_crd_v1'"
-    ).fetchone()
+    are reassigned to the new combined plant first, so no data is lost."""
+    done = _fetchone("SELECT value FROM schema_meta WHERE key='migrated_bd_crd_v1'")
     if done:
         return
 
     def _consolidate(old_codes, new_code):
-        new_row = cur.execute(
-            "SELECT id FROM plants_master WHERE site_code=?", (new_code,)
-        ).fetchone()
+        new_row = _fetchone("SELECT id FROM plants_master WHERE site_code=%s", (new_code,))
         if not new_row:
             return
         new_id = new_row["id"]
 
-        old_rows = cur.execute(
-            f"SELECT id FROM plants_master WHERE site_code IN ({','.join('?' * len(old_codes))})",
-            old_codes,
-        ).fetchall()
+        placeholders = ",".join(["%s"] * len(old_codes))
+        old_rows = _fetchall(
+            f"SELECT id FROM plants_master WHERE site_code IN ({placeholders})", old_codes
+        )
         old_ids = [r["id"] for r in old_rows if r["id"] != new_id]
         if not old_ids:
             return
 
-        cur.execute(
-            f"UPDATE entries SET plant_id=? WHERE plant_id IN ({','.join('?' * len(old_ids))})",
+        id_placeholders = ",".join(["%s"] * len(old_ids))
+        _execute(
+            f"UPDATE entries SET plant_id=%s WHERE plant_id IN ({id_placeholders})",
             [new_id] + old_ids,
         )
-        cur.execute(
-            f"DELETE FROM plants_master WHERE id IN ({','.join('?' * len(old_ids))})",
-            old_ids,
+        _execute(
+            f"DELETE FROM plants_master WHERE id IN ({id_placeholders})", old_ids
         )
 
     _consolidate(["S4QS", "S4PD", "S4PC"], "S4PC/S4QS")   # -> BD
     _consolidate(["S4PN", "S4SN"], "S4SN/S4PN")             # -> CRD
 
-    cur.execute(
-        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('migrated_bd_crd_v1', '1')"
+    _execute(
+        "INSERT INTO schema_meta (key, value) VALUES ('migrated_bd_crd_v1', '1') "
+        "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value"
     )
 
 
 def check_login(username: str, password: str):
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT * FROM users WHERE username=?", (username,)
-    ).fetchone()
-    conn.close()
+    row = _fetchone("SELECT * FROM users WHERE username=%s", (username,))
     if row and row["password_hash"] == _hash(password):
         return True
     return False
@@ -216,20 +289,13 @@ def check_login(username: str, password: str):
 
 def get_plants_by_region(region: str):
     """Used to populate the Plant dropdown once a region is chosen."""
-    conn = get_conn()
-    rows = conn.execute(
-        "SELECT * FROM plants_master WHERE region=? ORDER BY plant_name", (region,)
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    return _fetchall(
+        "SELECT * FROM plants_master WHERE region=%s ORDER BY plant_name", (region,)
+    )
 
 
 def get_plant_id_by_site_code(site_code: str):
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT id FROM plants_master WHERE site_code=?", (site_code,)
-    ).fetchone()
-    conn.close()
+    row = _fetchone("SELECT id FROM plants_master WHERE site_code=%s", (site_code,))
     return row["id"] if row else None
 
 
@@ -237,30 +303,25 @@ def entry_exists(plant_id, entry_date, shift, dv_type) -> bool:
     """Checks whether this plant already has an entry for this exact date+shift+DV
     Type combination. Used to block accidental duplicate submissions in Add Entry --
     the user should use Edit/Delete Entries to correct an existing one instead."""
-    conn = get_conn()
-    row = conn.execute(
-        """SELECT 1 FROM entries
-           WHERE plant_id=? AND entry_date=? AND shift=? AND dv_type=?
+    row = _fetchone(
+        """SELECT 1 AS found FROM entries
+           WHERE plant_id=%s AND entry_date=%s AND shift=%s AND dv_type=%s
            LIMIT 1""",
         (plant_id, entry_date, shift, dv_type),
-    ).fetchone()
-    conn.close()
+    )
     return row is not None
 
 
 def add_entry(plant_id, entry_date, shift, dv_type, total_dv, dv_available, dv_utilised,
               dv_inroute, updated_by, updated_at, trips_completed=0):
-    conn = get_conn()
-    conn.execute(
+    _execute(
         """INSERT INTO entries
            (plant_id, entry_date, shift, dv_type, total_dv, dv_available, dv_utilised,
             dv_inroute, trips_completed, updated_by, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
         (plant_id, entry_date, shift, dv_type, total_dv, dv_available, dv_utilised,
          dv_inroute, trips_completed, updated_by, updated_at),
     )
-    conn.commit()
-    conn.close()
 
 
 def update_entry(entry_id, total_dv, dv_available, dv_utilised, dv_inroute,
@@ -268,41 +329,30 @@ def update_entry(entry_id, total_dv, dv_available, dv_utilised, dv_inroute,
     """Corrects an existing entry in place (used by the Edit flow). trips_completed
     is intentionally left untouched -- it's a legacy column, no longer collected
     since Trips/DV/Month is now calculated from Effective Utilization instead."""
-    conn = get_conn()
-    conn.execute(
+    _execute(
         """UPDATE entries
-           SET total_dv=?, dv_available=?, dv_utilised=?, dv_inroute=?,
-               updated_by=?, updated_at=?
-           WHERE id=?""",
-        (total_dv, dv_available, dv_utilised, dv_inroute,
-         updated_by, updated_at, entry_id),
+           SET total_dv=%s, dv_available=%s, dv_utilised=%s, dv_inroute=%s,
+               updated_by=%s, updated_at=%s
+           WHERE id=%s""",
+        (total_dv, dv_available, dv_utilised, dv_inroute, updated_by, updated_at, entry_id),
     )
-    conn.commit()
-    conn.close()
 
 
 def delete_entry(entry_id):
-    conn = get_conn()
-    conn.execute("DELETE FROM entries WHERE id=?", (entry_id,))
-    conn.commit()
-    conn.close()
+    _execute("DELETE FROM entries WHERE id=%s", (entry_id,))
 
 
 def get_entry(entry_id):
-    conn = get_conn()
-    row = conn.execute("""
+    return _fetchone("""
         SELECT e.*, p.region, p.site_code, p.plant_name
         FROM entries e JOIN plants_master p ON p.id = e.plant_id
-        WHERE e.id=?
-    """, (entry_id,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+        WHERE e.id=%s
+    """, (entry_id,))
 
 
 def get_latest_entries():
     """One row per plant+DV type: the most recent entry submitted for it (any date/shift)."""
-    conn = get_conn()
-    rows = conn.execute("""
+    return _fetchall("""
         SELECT p.region, p.site_code, p.plant_name,
                e.total_dv, e.dv_available, e.dv_utilised, e.dv_inroute, e.trips_completed,
                e.updated_by, e.updated_at, e.entry_date, e.shift, e.dv_type
@@ -312,63 +362,48 @@ def get_latest_entries():
             SELECT MAX(id) FROM entries GROUP BY plant_id, dv_type
         )
         ORDER BY p.region, p.plant_name
-    """).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    """)
 
 
 def get_entry_history(plant_name: str):
-    conn = get_conn()
-    rows = conn.execute("""
+    return _fetchall("""
         SELECT e.* FROM entries e
         JOIN plants_master p ON p.id = e.plant_id
-        WHERE p.plant_name = ?
+        WHERE p.plant_name = %s
         ORDER BY e.updated_at DESC
-    """, (plant_name,)).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    """, (plant_name,))
 
 
 def get_all_entries_log():
     """Every single submission ever made, newest first -- the full audit log."""
-    conn = get_conn()
-    rows = conn.execute("""
+    return _fetchall("""
         SELECT e.id, p.region, p.site_code, p.plant_name, e.entry_date, e.shift, e.dv_type,
                e.total_dv, e.dv_available, e.dv_utilised, e.dv_inroute, e.trips_completed,
                e.updated_by, e.updated_at
         FROM entries e
         JOIN plants_master p ON p.id = e.plant_id
         ORDER BY e.id DESC
-    """).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    """)
 
 
 def get_dates_with_entries():
     """Distinct entry dates that have data, newest first -- for date pickers."""
-    conn = get_conn()
-    rows = conn.execute(
-        "SELECT DISTINCT entry_date FROM entries ORDER BY entry_date DESC"
-    ).fetchall()
-    conn.close()
+    rows = _fetchall("SELECT DISTINCT entry_date FROM entries ORDER BY entry_date DESC")
     return [r["entry_date"] for r in rows]
 
 
 def get_entries_for_date(date_str: str):
     """All entries (both shifts, all DV types) logged for a given date -- raw rows,
     used by the Edit/Delete screen so every individual submission is editable."""
-    conn = get_conn()
-    rows = conn.execute("""
+    return _fetchall("""
         SELECT e.id, p.region, p.site_code, p.plant_name, e.entry_date, e.shift, e.dv_type,
                e.total_dv, e.dv_available, e.dv_utilised, e.dv_inroute, e.trips_completed,
                e.updated_by, e.updated_at
         FROM entries e
         JOIN plants_master p ON p.id = e.plant_id
-        WHERE e.entry_date = ?
+        WHERE e.entry_date = %s
         ORDER BY e.shift, p.region, p.plant_name
-    """, (date_str,)).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    """, (date_str,))
 
 
 def get_latest_entries_for_date(date_str: str):
@@ -376,21 +411,18 @@ def get_latest_entries_for_date(date_str: str):
     into a single 'latest submission wins' result, per the requirement that the
     report should not segregate by shift, only show the most recent value.
     Still segregates by DV type, since that's an intentional dimension."""
-    conn = get_conn()
-    rows = conn.execute("""
+    return _fetchall("""
         SELECT p.region, p.site_code, p.plant_name, e.dv_type,
                e.total_dv, e.dv_available, e.dv_utilised, e.dv_inroute, e.trips_completed,
                e.updated_by, e.updated_at, e.entry_date, e.shift
         FROM entries e
         JOIN plants_master p ON p.id = e.plant_id
-        WHERE e.entry_date = ?
+        WHERE e.entry_date = %s
         AND e.id IN (
-            SELECT MAX(id) FROM entries WHERE entry_date = ? GROUP BY plant_id, dv_type
+            SELECT MAX(id) FROM entries WHERE entry_date = %s GROUP BY plant_id, dv_type
         )
         ORDER BY p.region, p.plant_name, e.dv_type
-    """, (date_str, date_str)).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    """, (date_str, date_str))
 
 
 def get_entries_since(start_date_str: str):
@@ -398,36 +430,30 @@ def get_entries_since(start_date_str: str):
     plant+date+shift+dv_type (dedupes edits so corrections are reflected, not
     double-counted, without collapsing different DV types into each other).
     Used by the Professional Dashboard's weekly/monthly trend analytics."""
-    conn = get_conn()
-    rows = conn.execute("""
+    return _fetchall("""
         SELECT p.region, p.site_code, p.plant_name, e.entry_date, e.shift, e.dv_type,
                e.total_dv, e.dv_available, e.dv_utilised, e.dv_inroute, e.trips_completed
         FROM entries e
         JOIN plants_master p ON p.id = e.plant_id
-        WHERE e.entry_date >= ?
+        WHERE e.entry_date >= %s
         AND e.id IN (
             SELECT MAX(id) FROM entries GROUP BY plant_id, entry_date, shift, dv_type
         )
         ORDER BY e.entry_date, p.region, p.plant_name
-    """, (start_date_str,)).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    """, (start_date_str,))
 
 
 def get_entries_between(start_date_str: str, end_date_str: str):
     """All entries between two dates (inclusive), same dedupe rule as get_entries_since.
     Used for the custom weekly date-range picker and the monthly month picker."""
-    conn = get_conn()
-    rows = conn.execute("""
+    return _fetchall("""
         SELECT p.region, p.site_code, p.plant_name, e.entry_date, e.shift, e.dv_type,
                e.total_dv, e.dv_available, e.dv_utilised, e.dv_inroute, e.trips_completed
         FROM entries e
         JOIN plants_master p ON p.id = e.plant_id
-        WHERE e.entry_date >= ? AND e.entry_date <= ?
+        WHERE e.entry_date >= %s AND e.entry_date <= %s
         AND e.id IN (
             SELECT MAX(id) FROM entries GROUP BY plant_id, entry_date, shift, dv_type
         )
         ORDER BY e.entry_date, p.region, p.plant_name
-    """, (start_date_str, end_date_str)).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    """, (start_date_str, end_date_str))
