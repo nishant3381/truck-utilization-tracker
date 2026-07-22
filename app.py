@@ -439,14 +439,13 @@ def render_css():
             position: absolute;
             top: 0;
             left: -40px;
-            font-size: 1.8rem;
             animation: truckDrive 4.5s linear infinite;
         }}
         @keyframes truckDrive {{
-            0%   {{ left: -40px; opacity: 0; }}
+            0%   {{ left: 240px; opacity: 0; }}
             10%  {{ opacity: 1; }}
             90%  {{ opacity: 1; }}
-            100% {{ left: 240px; opacity: 0; }}
+            100% {{ left: -40px; opacity: 0; }}
         }}
 
         .app-footer {{
@@ -548,7 +547,16 @@ def screen_landing():
     col_truck, spacer, col_icon = st.columns([3, 6, 1])
     with col_truck:
         st.markdown(
-            '<div class="truck-anim-wrap"><span class="truck-anim">🚚</span></div>',
+            '<div class="truck-anim-wrap"><span class="truck-anim">'
+            '<svg viewBox="0 0 64 36" width="42" height="24" xmlns="http://www.w3.org/2000/svg">'
+            '<rect x="26" y="4" width="34" height="20" rx="2" fill="#F2C14E"/>'
+            '<path d="M4 12 h20 v12 h-20 a4 4 0 0 1 -4 -4 v-4 a4 4 0 0 1 4 -4 z" fill="#E74C3C"/>'
+            '<path d="M6 14 h12 v6 h-14 a2 2 0 0 1 0 -4 z" fill="#63C7F2"/>'
+            '<rect x="4" y="24" width="56" height="3" fill="#1F3864"/>'
+            '<circle cx="16" cy="30" r="5" fill="#1F2937"/><circle cx="16" cy="30" r="2" fill="#E74C3C"/>'
+            '<circle cx="48" cy="30" r="5" fill="#1F2937"/><circle cx="48" cy="30" r="2" fill="#E74C3C"/>'
+            '</svg>'
+            '</span></div>',
             unsafe_allow_html=True,
         )
     with col_icon:
