@@ -1,6 +1,6 @@
 """
 app.py
-Truck Utilization Tracker -- Streamlit app.
+DV Utilization Tracker -- Streamlit app.
 
 Run locally:
     streamlit run app.py
@@ -18,7 +18,7 @@ import analytics
 from excel_export import export_day_wise_to_excel_bytes, build_report_dataframe
 
 st.set_page_config(
-    page_title="Truck Utilization Tracker",
+    page_title="DV Utilization Tracker",
     page_icon="📦",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -429,6 +429,26 @@ def render_css():
             overflow: hidden;
         }}
 
+        .truck-anim-wrap {{
+            position: relative;
+            height: 38px;
+            width: 240px;
+            overflow: hidden;
+        }}
+        .truck-anim {{
+            position: absolute;
+            top: 0;
+            left: -40px;
+            font-size: 1.8rem;
+            animation: truckDrive 4.5s linear infinite;
+        }}
+        @keyframes truckDrive {{
+            0%   {{ left: -40px; opacity: 0; }}
+            10%  {{ opacity: 1; }}
+            90%  {{ opacity: 1; }}
+            100% {{ left: 240px; opacity: 0; }}
+        }}
+
         .app-footer {{
             text-align: center;
             color: {T['subtitle_color']};
@@ -512,7 +532,7 @@ def render_topbar(action_icon=None, action_fn=None):
 
 def render_footer():
     st.markdown(
-        f'<div class="app-footer">© {datetime.now().year} Truck Utilization Tracker — Built for RCPL Beverages Operations</div>',
+        f'<div class="app-footer">© {datetime.now().year} DV Utilization Tracker — Built for RCPL Beverages Operations</div>',
         unsafe_allow_html=True,
     )
 
@@ -525,7 +545,12 @@ render_css()
 # two equal glassy square cards with the action button pinned to the bottom
 # ---------------------------------------------------------------------------
 def screen_landing():
-    spacer, col_icon = st.columns([9, 1])
+    col_truck, spacer, col_icon = st.columns([3, 6, 1])
+    with col_truck:
+        st.markdown(
+            '<div class="truck-anim-wrap"><span class="truck-anim">🚚</span></div>',
+            unsafe_allow_html=True,
+        )
     with col_icon:
         with st.container(key="topbar_landing"):
             icon = "☀️" if st.session_state.theme == "dark" else "🌙"
@@ -533,7 +558,7 @@ def screen_landing():
                 toggle_theme()
                 st.rerun()
 
-    st.markdown('<div class="hero-title" style="text-align:center;">Truck Utilization Tracker</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hero-title" style="text-align:center;">DV Utilization Tracker</div>', unsafe_allow_html=True)
 
     st.markdown(
         '<div class="hero-subtitle">Track dedicated vehicle (DV) availability and utilization across all plants, in real time.</div>',
